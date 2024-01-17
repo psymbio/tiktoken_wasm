@@ -62,6 +62,13 @@ def read_file_cached(blobpath: str) -> bytes:
 
     return contents
 
+def read_file_saved(tiktoken_bpe_file):
+    """
+    Read the cached tiktoken files because of the CORS error
+    """
+    # print("new caching method called")
+    with open(tiktoken_bpe_file) as f:
+        return f.read()
 
 def data_gym_to_mergeable_bpe_ranks(
     vocab_bpe_file: str, encoder_json_file: str
@@ -105,6 +112,48 @@ def data_gym_to_mergeable_bpe_ranks(
 
     return bpe_ranks
 
+def data_gym_to_mergeable_bpe_ranks_saved(
+    vocab_bpe_file: str, encoder_json_file: str
+) -> dict[bytes, int]:
+    # NB: do not add caching to this function
+    rank_to_intbyte = [b for b in range(2**8) if chr(b).isprintable() and chr(b) != " "]
+
+    data_gym_byte_to_byte = {chr(b): b for b in rank_to_intbyte}
+    n = 0
+    for b in range(2**8):
+        if b not in rank_to_intbyte:
+            rank_to_intbyte.append(b)
+            data_gym_byte_to_byte[chr(2**8 + n)] = b
+            n += 1
+    assert len(rank_to_intbyte) == 2**8
+
+    # vocab_bpe contains the merges along with associated ranks
+    vocab_bpe_contents = read_file_saved(vocab_bpe_file)
+    bpe_merges = [tuple(merge_str.split()) for merge_str in vocab_bpe_contents.split("\n")[1:-1]]
+
+    def decode_data_gym(value: str) -> bytes:
+        return bytes(data_gym_byte_to_byte[b] for b in value)
+
+    # add the single byte tokens
+    bpe_ranks = {bytes([b]): i for i, b in enumerate(rank_to_intbyte)}
+    # add the merged tokens
+    n = len(bpe_ranks)
+    for first, second in bpe_merges:
+        bpe_ranks[decode_data_gym(first) + decode_data_gym(second)] = n
+        n += 1
+
+    # check that the encoder file matches the merges file
+    # this sanity check is important since tiktoken assumes that ranks are ordered the same
+    # as merge priority
+    encoder_json = json.loads(read_file_saved(encoder_json_file))
+    encoder_json_loaded = {decode_data_gym(k): v for k, v in encoder_json.items()}
+    # drop these two special tokens if present, since they're not mergeable bpe tokens
+    encoder_json_loaded.pop(b"<|endoftext|>", None)
+    encoder_json_loaded.pop(b"<|startoftext|>", None)
+    assert bpe_ranks == encoder_json_loaded
+
+    return bpe_ranks
+
 
 def dump_tiktoken_bpe(bpe_ranks: dict[bytes, int], tiktoken_bpe_file: str) -> None:
     try:
@@ -121,6 +170,14 @@ def dump_tiktoken_bpe(bpe_ranks: dict[bytes, int], tiktoken_bpe_file: str) -> No
 def load_tiktoken_bpe(tiktoken_bpe_file: str) -> dict[bytes, int]:
     # NB: do not add caching to this function
     contents = read_file_cached(tiktoken_bpe_file)
+    return {
+        base64.b64decode(token): int(rank)
+        for token, rank in (line.split() for line in contents.splitlines() if line)
+    }
+
+def load_tiktoken_bpe_saved(tiktoken_bpe_file: str) -> dict[bytes, int]:
+    # NB: do not add caching to this function
+    contents = read_file_saved(tiktoken_bpe_file)
     return {
         base64.b64decode(token): int(rank)
         for token, rank in (line.split() for line in contents.splitlines() if line)
